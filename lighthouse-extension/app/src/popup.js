@@ -16,152 +16,117 @@
  */
 'use strict';
 
-document.addEventListener('DOMContentLoaded', _ => {
-  const background = chrome.extension.getBackgroundPage();
-  const defaultAggregations = background.getDefaultAggregations();
+/**
+ * Error strings that indicate a problem in how Lighthouse was run, not in
+ * Lighthouse itself, mapped to more useful strings to report to the user.
+ */
+const NON_BUG_ERROR_MESSAGES = {
+  'Another debugger': 'You probably have DevTools open. Close DevTools to use Lighthouse',
+  'multiple tabs': 'You probably have multiple tabs open to the same origin. ' +
+      'Close the other tabs to use Lighthouse.',
+  // The extension debugger API is forbidden from attaching to the web store.
+  // @see https://chromium.googlesource.com/chromium/src/+/5d1f214db0f7996f3c17cd87093d439ce4c7f8f1/chrome/common/extensions/chrome_extensions_client.cc#232
+  'The extensions gallery cannot be scripted': 'The Lighthouse extension cannot audit the ' +
+      'Chrome Web Store. If necessary, use the Lighthouse CLI to do so.',
+  // The user tries to review an error page or has network issues
+  'Unable to load the page': 'Unable to load the page. Please verify the url you ' +
+      'are trying to review.'
+};
 
-  const siteNameEl = window.document.querySelector('header h2');
-  const generateReportEl = document.getElementById('generate-report');
-  const subpageVisibleClass = 'subpage--visible';
+const subpageVisibleClass = 'subpage--visible';
 
-  const statusEl = document.body.querySelector('.status');
-  const statusMessageEl = document.body.querySelector('.status__msg');
-  const statusDetailsMessageEl = document.body.querySelector('.status__detailsmsg');
-  const feedbackEl = document.body.querySelector('.feedback');
+const getBackgroundPage = new Promise((resolve, reject) => {
+  chrome.runtime.getBackgroundPage(resolve);
+});
 
-  const generateOptionsEl = document.getElementById('configure-options');
-  const optionsEl = document.body.querySelector('.options');
-  const optionsList = document.body.querySelector('.options__list');
-  const okButton = document.getElementById('ok');
+let siteURL = null;
+let statusEl = null;
 
+function getLighthouseVersion() {
+  return chrome.runtime.getManifest().version;
+}
+
+function getChromeVersion() {
+  return /Chrome\/([0-9.]+)/.exec(navigator.userAgent)[1];
+}
+
+function startSpinner() {
+  statusEl.classList.add(subpageVisibleClass);
+}
+
+function stopSpinner() {
+  statusEl.classList.remove(subpageVisibleClass);
+}
+
+function buildReportErrorLink(err) {
   const MAX_ISSUE_ERROR_LENGTH = 60;
 
-  let siteURL = null;
+  let qsBody = '**Lighthouse Version**: ' + getLighthouseVersion() + '\n';
+  qsBody += '**Chrome Version**: ' + getChromeVersion() + '\n';
 
-  /**
-   * Error strings that indicate a problem in how Lighthouse was run, not in
-   * Lighthouse itself, mapped to more useful strings to report to the user.
-   */
-  const NON_BUG_ERROR_MESSAGES = {
-    'Another debugger': 'You probably have DevTools open. Close DevTools to use Lighthouse',
-    'multiple tabs': 'You probably have multiple tabs open to the same origin. ' +
-        'Close the other tabs to use Lighthouse.',
-    // The extension debugger API is forbidden from attaching to the web store.
-    // @see https://chromium.googlesource.com/chromium/src/+/5d1f214db0f7996f3c17cd87093d439ce4c7f8f1/chrome/common/extensions/chrome_extensions_client.cc#232
-    'The extensions gallery cannot be scripted': 'The Lighthouse extension cannot audit the ' +
-        'Chrome Web Store. If necessary, use the Lighthouse CLI to do so.',
-    // The user tries to review an error page or has network issues
-    'Unable to load the page': 'Unable to load the page. Please verify the url you ' +
-        'are trying to review.'
-  };
-
-  function getLighthouseVersion() {
-    return chrome.runtime.getManifest().version;
+  if (siteURL) {
+    qsBody += '**URL**: ' + siteURL + '\n';
   }
 
-  function getChromeVersion() {
-    return /Chrome\/([0-9.]+)/.exec(navigator.userAgent)[1];
+  qsBody += '**Error Message**: ' + err.message + '\n';
+  qsBody += '**Stack Trace**:\n ```' + err.stack + '```';
+
+  const base = 'https://github.com/googlechrome/lighthouse/issues/new?';
+  let titleError = err.message;
+
+  if (titleError.length > MAX_ISSUE_ERROR_LENGTH) {
+    titleError = `${titleError.substring(0, MAX_ISSUE_ERROR_LENGTH - 3)}...`;
+  }
+  const title = encodeURI('title=Extension Error: ' + titleError);
+  const body = '&body=' + encodeURI(qsBody);
+
+  const reportErrorEl = document.createElement('a');
+  reportErrorEl.className = 'button button--report-error';
+  reportErrorEl.href = base + title + body;
+  reportErrorEl.textContent = 'Report Error';
+  reportErrorEl.target = '_blank';
+
+  return reportErrorEl;
+}
+
+function logstatus([, message, details]) {
+  document.querySelector('.status__msg').textContent = message;
+  const statusDetailsMessageEl = document.querySelector('.status__detailsmsg');
+  statusDetailsMessageEl.textContent = details;
+}
+
+function createOptionItem(text, isChecked) {
+  const input = document.createElement('input');
+  input.setAttribute('type', 'checkbox');
+  input.setAttribute('value', text);
+  if (isChecked) {
+    input.setAttribute('checked', 'checked');
   }
 
-  function buildReportErrorLink(err) {
-    const reportErrorEl = document.createElement('a');
-    reportErrorEl.className = 'button button--report-error';
+  const label = document.createElement('label');
+  label.appendChild(input);
+  label.appendChild(document.createTextNode(text));
+  const listItem = document.createElement('li');
+  listItem.appendChild(label);
 
-    let qsBody = '**Lighthouse Version**: ' + getLighthouseVersion() + '\n';
-    qsBody += '**Chrome Version**: ' + getChromeVersion() + '\n';
+  return listItem;
+}
 
-    if (siteURL) {
-      qsBody += '**URL**: ' + siteURL + '\n';
-    }
+function onGenerateReportButtonClick() {
+  startSpinner();
 
-    qsBody += '**Error Message**: ' + err.message + '\n';
-    qsBody += '**Stack Trace**:\n ```' + err.stack + '```';
+  const feedbackEl = document.querySelector('.feedback');
+  feedbackEl.textContent = '';
 
-    const base = 'https://github.com/googlechrome/lighthouse/issues/new?';
-    let titleError = err.message;
-    if (titleError.length > MAX_ISSUE_ERROR_LENGTH) {
-      titleError = `${titleError.substring(0, MAX_ISSUE_ERROR_LENGTH - 3)}...`;
-    }
-    const title = encodeURI('title=Extension Error: ' + titleError);
-    const body = '&body=' + encodeURI(qsBody);
-
-    reportErrorEl.href = base + title + body;
-    reportErrorEl.textContent = 'Report Error';
-    reportErrorEl.target = '_blank';
-    return reportErrorEl;
-  }
-
-  function startSpinner() {
-    statusEl.classList.add(subpageVisibleClass);
-  }
-
-  function stopSpinner() {
-    statusEl.classList.remove(subpageVisibleClass);
-  }
-
-  function logstatus([, message, details]) {
-    statusMessageEl.textContent = message;
-    statusDetailsMessageEl.textContent = details;
-  }
-
-  function createOptionItem(text, isChecked) {
-    const input = document.createElement('input');
-    input.setAttribute('type', 'checkbox');
-    input.setAttribute('value', text);
-    if (isChecked) {
-      input.setAttribute('checked', 'checked');
-    }
-
-    const label = document.createElement('label');
-    label.appendChild(input);
-    label.appendChild(document.createTextNode(text));
-    const listItem = document.createElement('li');
-    listItem.appendChild(label);
-
-    return listItem;
-  }
-
-  /**
-   * Generates a document fragment containing a list of checkboxes and labels
-   * for the aggregation categories.
-   * @param {!Object<boolean>} selectedAggregations
-   * @return {!DocumentFragment}
-   */
-  function generateOptionsList(list, selectedAggregations) {
-    const frag = document.createDocumentFragment();
-
-    defaultAggregations.forEach(aggregation => {
-      const isChecked = selectedAggregations[aggregation.name];
-      frag.appendChild(createOptionItem(aggregation.name, isChecked));
-    });
-
-    return frag;
-  }
-
-  if (background.isRunning()) {
-    startSpinner();
-  }
-
-  background.listenForStatus(logstatus);
-  background.loadSelectedAggregations().then(aggregations => {
-    const frag = generateOptionsList(optionsList, aggregations);
-    optionsList.appendChild(frag);
-  });
-
-  generateReportEl.addEventListener('click', () => {
-    startSpinner();
-    feedbackEl.textContent = '';
-
-    background.loadSelectedAggregations()
-    .then(selectedAggregations => {
+  getBackgroundPage.then(background => {
+    background.loadSelectedAggregations().then(selectedAggregations => {
       return background.runLighthouseInExtension({
         flags: {
           disableCpuThrottling: true
         },
         restoreCleanState: true
       }, selectedAggregations);
-    })
-    .catch(err => {
+    }).catch(err => {
       let message = err.message;
       let includeReportLink = true;
 
@@ -186,26 +151,69 @@ document.addEventListener('DOMContentLoaded', _ => {
       background.console.error(err);
     });
   });
+}
 
-  generateOptionsEl.addEventListener('click', () => {
-    optionsEl.classList.add(subpageVisibleClass);
-  });
+document.addEventListener('DOMContentLoaded', _ => {
+  getBackgroundPage.then(background => {
+    statusEl = document.querySelector('.status');
 
-  okButton.addEventListener('click', () => {
-    // Save selected aggregation categories on options page close.
-    const checkedAggregations = Array.from(optionsEl.querySelectorAll(':checked'))
-        .map(input => input.value);
-    background.saveSelectedAggregations(checkedAggregations);
+    /**
+     * Generates a document fragment containing a list of checkboxes and labels
+     * for the aggregation categories.
+     * @param {!Object<boolean>} selectedAggregations
+     * @return {!DocumentFragment}
+     */
+    function generateOptionsList(list, selectedAggregations) {
+      const frag = document.createDocumentFragment();
 
-    optionsEl.classList.remove(subpageVisibleClass);
-  });
+      const defaultAggregations = background.getDefaultAggregations();
+      defaultAggregations.forEach(aggregation => {
+        const isChecked = selectedAggregations[aggregation.name];
+        frag.appendChild(createOptionItem(aggregation.name, isChecked));
+      });
 
-  chrome.tabs.query({active: true, lastFocusedWindow: true}, function(tabs) {
-    if (tabs.length === 0) {
-      return;
+      return frag;
     }
 
-    siteURL = new URL(tabs[0].url);
-    siteNameEl.textContent = siteURL.origin;
+    if (background.isRunning()) {
+      startSpinner();
+    }
+
+    const optionsList = document.querySelector('.options__list');
+
+    background.listenForStatus(logstatus);
+    background.loadSelectedAggregations().then(aggregations => {
+      const frag = generateOptionsList(optionsList, aggregations);
+      optionsList.appendChild(frag);
+    });
+
+    const generateReportEl = document.getElementById('generate-report');
+    generateReportEl.addEventListener('click', onGenerateReportButtonClick);
+
+    const generateOptionsEl = document.getElementById('configure-options');
+    const optionsEl = document.querySelector('.options');
+    generateOptionsEl.addEventListener('click', () => {
+      optionsEl.classList.add(subpageVisibleClass);
+    });
+
+    const okButton = document.getElementById('ok');
+    okButton.addEventListener('click', () => {
+      // Save selected aggregation categories on options page close.
+      const checkedAggregations = Array.from(optionsEl.querySelectorAll(':checked'))
+          .map(input => input.value);
+      background.saveSelectedAggregations(checkedAggregations);
+
+      optionsEl.classList.remove(subpageVisibleClass);
+    });
+
+    chrome.tabs.query({active: true, lastFocusedWindow: true}, function(tabs) {
+      if (tabs.length === 0) {
+        return;
+      }
+
+      siteURL = new URL(tabs[0].url);
+
+      document.querySelector('header h2').textContent = siteURL.origin;
+    });
   });
 });
