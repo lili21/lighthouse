@@ -214,6 +214,7 @@ function initPopup(background) {
 
     siteURL = new URL(tabs[0].url);
 
+    // Show the user what URL is going to be tested.
     document.querySelector('header h2').textContent = siteURL.origin;
   });
 }
