@@ -33,6 +33,8 @@ const NON_BUG_ERROR_MESSAGES = {
       'are trying to review.'
 };
 
+const MAX_ISSUE_ERROR_LENGTH = 60;
+
 const subpageVisibleClass = 'subpage--visible';
 
 const getBackgroundPage = new Promise((resolve, reject) => {
@@ -40,7 +42,6 @@ const getBackgroundPage = new Promise((resolve, reject) => {
 });
 
 let siteURL = null;
-let statusEl = null;
 
 function getLighthouseVersion() {
   return chrome.runtime.getManifest().version;
@@ -50,17 +51,15 @@ function getChromeVersion() {
   return /Chrome\/([0-9.]+)/.exec(navigator.userAgent)[1];
 }
 
-function startSpinner() {
-  statusEl.classList.add(subpageVisibleClass);
+function showRunningSubpage() {
+  document.querySelector('.status').classList.add(subpageVisibleClass);
 }
 
-function stopSpinner() {
-  statusEl.classList.remove(subpageVisibleClass);
+function hideRunningSubpage() {
+  document.querySelector('.status').classList.remove(subpageVisibleClass);
 }
 
 function buildReportErrorLink(err) {
-  const MAX_ISSUE_ERROR_LENGTH = 60;
-
   let qsBody = '**Lighthouse Version**: ' + getLighthouseVersion() + '\n';
   qsBody += '**Chrome Version**: ' + getChromeVersion() + '\n';
 
@@ -89,7 +88,7 @@ function buildReportErrorLink(err) {
   return reportErrorEl;
 }
 
-function logstatus([, message, details]) {
+function logStatus([, message, details]) {
   document.querySelector('.status__msg').textContent = message;
   const statusDetailsMessageEl = document.querySelector('.status__detailsmsg');
   statusDetailsMessageEl.textContent = details;
@@ -113,7 +112,7 @@ function createOptionItem(text, isChecked) {
 }
 
 function onGenerateReportButtonClick() {
-  startSpinner();
+  showRunningSubpage();
 
   const feedbackEl = document.querySelector('.feedback');
   feedbackEl.textContent = '';
@@ -147,73 +146,78 @@ function onGenerateReportButtonClick() {
         feedbackEl.appendChild(buildReportErrorLink(err));
       }
 
-      stopSpinner();
+      hideRunningSubpage();
       background.console.error(err);
     });
   });
 }
 
-document.addEventListener('DOMContentLoaded', _ => {
-  getBackgroundPage.then(background => {
-    statusEl = document.querySelector('.status');
+/**
+ * Generates a document fragment containing a list of checkboxes and labels
+ * for the aggregation categories.
+ * @param {!Object<boolean>} selectedAggregations
+ * @param {!Window} background Reference to the extension's background page.
+ * @return {!DocumentFragment}
+ */
+function generateOptionsList(list, selectedAggregations, background) {
+  const frag = document.createDocumentFragment();
 
-    /**
-     * Generates a document fragment containing a list of checkboxes and labels
-     * for the aggregation categories.
-     * @param {!Object<boolean>} selectedAggregations
-     * @return {!DocumentFragment}
-     */
-    function generateOptionsList(list, selectedAggregations) {
-      const frag = document.createDocumentFragment();
-
-      const defaultAggregations = background.getDefaultAggregations();
-      defaultAggregations.forEach(aggregation => {
-        const isChecked = selectedAggregations[aggregation.name];
-        frag.appendChild(createOptionItem(aggregation.name, isChecked));
-      });
-
-      return frag;
-    }
-
-    if (background.isRunning()) {
-      startSpinner();
-    }
-
-    const optionsList = document.querySelector('.options__list');
-
-    background.listenForStatus(logstatus);
-    background.loadSelectedAggregations().then(aggregations => {
-      const frag = generateOptionsList(optionsList, aggregations);
-      optionsList.appendChild(frag);
-    });
-
-    const generateReportEl = document.getElementById('generate-report');
-    generateReportEl.addEventListener('click', onGenerateReportButtonClick);
-
-    const generateOptionsEl = document.getElementById('configure-options');
-    const optionsEl = document.querySelector('.options');
-    generateOptionsEl.addEventListener('click', () => {
-      optionsEl.classList.add(subpageVisibleClass);
-    });
-
-    const okButton = document.getElementById('ok');
-    okButton.addEventListener('click', () => {
-      // Save selected aggregation categories on options page close.
-      const checkedAggregations = Array.from(optionsEl.querySelectorAll(':checked'))
-          .map(input => input.value);
-      background.saveSelectedAggregations(checkedAggregations);
-
-      optionsEl.classList.remove(subpageVisibleClass);
-    });
-
-    chrome.tabs.query({active: true, lastFocusedWindow: true}, function(tabs) {
-      if (tabs.length === 0) {
-        return;
-      }
-
-      siteURL = new URL(tabs[0].url);
-
-      document.querySelector('header h2').textContent = siteURL.origin;
-    });
+  const defaultAggregations = background.getDefaultAggregations();
+  defaultAggregations.forEach(aggregation => {
+    const isChecked = selectedAggregations[aggregation.name];
+    frag.appendChild(createOptionItem(aggregation.name, isChecked));
   });
+
+  return frag;
+}
+
+/**
+ * Initializes the popup's state and UI elements.
+ * @param {!Window} background Reference to the extension's background page.
+ */
+function initPopup(background) {
+  if (background.isRunning()) {
+    showRunningSubpage();
+  }
+
+  background.listenForStatus(logStatus);
+
+  const optionsList = document.querySelector('.options__list');
+  background.loadSelectedAggregations().then(aggregations => {
+    const frag = generateOptionsList(optionsList, aggregations, background);
+    optionsList.appendChild(frag);
+  });
+
+  const generateReportButton = document.getElementById('generate-report');
+  generateReportButton.addEventListener('click', onGenerateReportButtonClick);
+
+  const generateOptionsEl = document.getElementById('configure-options');
+  const optionsEl = document.querySelector('.options');
+  generateOptionsEl.addEventListener('click', () => {
+    optionsEl.classList.add(subpageVisibleClass);
+  });
+
+  const okButton = document.getElementById('ok');
+  okButton.addEventListener('click', () => {
+    // Save selected aggregation categories on options page close.
+    const checkedAggregations = Array.from(optionsEl.querySelectorAll(':checked'))
+        .map(input => input.value);
+    background.saveSelectedAggregations(checkedAggregations);
+
+    optionsEl.classList.remove(subpageVisibleClass);
+  });
+
+  chrome.tabs.query({active: true, lastFocusedWindow: true}, function(tabs) {
+    if (tabs.length === 0) {
+      return;
+    }
+
+    siteURL = new URL(tabs[0].url);
+
+    document.querySelector('header h2').textContent = siteURL.origin;
+  });
+}
+
+document.addEventListener('DOMContentLoaded', _ => {
+  getBackgroundPage.then(initPopup);
 });
